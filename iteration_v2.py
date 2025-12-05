@@ -34,7 +34,7 @@ class CodeTester:
         
     def generate(self, prompt):
         # NO F-STRINGS - plain strings only
-        full_prompt = "Write Python function: " + prompt + "\n```
+        full_prompt = "Write Python function: " + prompt + " def "
         inputs = self.tokenizer(full_prompt, return_tensors="pt", truncation=True, max_length=128)
         
         with torch.no_grad():
