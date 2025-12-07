@@ -20,7 +20,7 @@ previous_model_path = "./my-python-code-llm-final_qwen"
 #  Use streaming + take(5000) to bypass deprecated script issue
 print("Loading Python code dataset (streaming mode)...")
 dataset_stream = load_dataset("codeparrot/github-code", languages=["Python"], streaming=True, split="train")
-dataset = list(itertools.islice(dataset_stream, 5000))  # Take first 5000 Python samples [web:11]
+dataset = list(itertools.islice(dataset_stream, 5000))  # Take first 5000 Python samples 
 
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 if tokenizer.pad_token is None:
