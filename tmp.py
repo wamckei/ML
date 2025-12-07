@@ -1,31 +1,35 @@
-# Training Iteration 3 - Resume from previous LoRA model (FIXED: Using working dataset)
+# Training Iteration 3 - Resume from previous LoRA model (FIXED DATASET LOADING)
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:32"
 import torch
 torch.cuda.empty_cache()
 import gc
+
 from datasets import load_dataset
 from transformers import (
     AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, 
     DataCollatorForLanguageModeling, BitsAndBytesConfig
 )
-from peft import PeftModel
+from peft import PeftModel, LoraConfig, get_peft_model, TaskType
+import itertools
 
 # Same base model and quantization
 model_name = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
 previous_model_path = "./my-python-code-llm-final_qwen"
 
-# FIXED: Use flytech/python-codes-25k (works reliably, no script issues)
-print("Loading Python code dataset...")
-dataset = load_dataset("flytech/python-codes-25k", split="train[:5000]")  # Back to your working dataset!
+#  Use streaming + take(5000) to bypass deprecated script issue
+print("Loading Python code dataset (streaming mode)...")
+dataset_stream = load_dataset("codeparrot/github-code", languages=["Python"], streaming=True, split="train")
+dataset = list(itertools.islice(dataset_stream, 5000))  # Take first 5000 Python samples 
 
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
-# FIXED: Proper tokenization for python-codes-25k (uses 'text' field)
+# Proper Python code tokenization (no instruction/input/output fields)
 def tokenize_function(examples):
-    texts = examples['text']  # flytech dataset uses 'text' field with Python code
+    # Use 'code' field directly from github-code dataset
+    texts = examples['code']
     tokenized = tokenizer(texts, truncation=True, padding=False, max_length=512, return_tensors=None)
     tokenized["labels"] = tokenized["input_ids"].copy()
     return tokenized
@@ -51,12 +55,12 @@ model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentran
 
 model.print_trainable_parameters()
 
-# Conservative resume training args
+# Conservative resume training args (LOWER LR for continued training)
 training_args = TrainingArguments(
     output_dir="./qwen-coder-finetuned-v2",
     num_train_epochs=2, per_device_train_batch_size=1,
     gradient_accumulation_steps=8, optim="adamw_torch",
-    learning_rate=5e-5,
+    learning_rate=5e-5,  # LOWER for continued training
     fp16=True, logging_steps=25, max_steps=3000,
     save_steps=750, eval_strategy="no",
     warmup_steps=25, dataloader_pin_memory=False,
@@ -71,7 +75,7 @@ torch.cuda.empty_cache()
 
 data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False, padding=True)
 
-print("🚀 Resuming training from previous LoRA adapters...")
+print(" Resuming training from previous LoRA adapters...")
 trainer = Trainer(
     model=model, args=training_args,
     train_dataset=tokenized_dataset,
@@ -81,3 +85,4 @@ trainer = Trainer(
 trainer.train()
 trainer.save_model("./my-python-code-llm-v2_final")
 print("✅ Iteration 3 complete!")
+
