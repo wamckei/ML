@@ -1,28 +1,40 @@
-# Training Iteration 3 - Resume from previous LoRA model
+# Training Iteration 3 - Resume from previous LoRA model (FIXED DATASET LOADING)
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:32"
 import torch
 torch.cuda.empty_cache()
 import gc
-from datasets import load_dataset, concatenate_datasets
+
+from datasets import load_dataset
 from transformers import (
     AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, 
     DataCollatorForLanguageModeling, BitsAndBytesConfig
 )
 from peft import PeftModel, LoraConfig, get_peft_model, TaskType
+import itertools
 
 # Same base model and quantization
 model_name = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
 previous_model_path = "./my-python-code-llm-final_qwen"
 
-# PLACEHOLDER: Replace with your new/expanded dataset(s)
-# Example: new_dataset = load_dataset("your/new-python-dataset", split="train[:5000]")
-# dataset = concatenate_datasets([load_dataset("flytech/python-codes-25k", split="train[1000:]"), new_dataset])
-dataset = load_dataset("flytech/python-codes-25k", split="train[1000:2000]")  # Placeholder
+#  Use streaming + take(5000) to bypass deprecated script issue
+print("Loading Python code dataset (streaming mode)...")
+dataset_stream = load_dataset("codeparrot/github-code", languages=["Python"], streaming=True, split="train")
+dataset = list(itertools.islice(dataset_stream, 5000))  # Take first 5000 Python samples [web:11]
 
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
+
+# Proper Python code tokenization (no instruction/input/output fields)
+def tokenize_function(examples):
+    # Use 'code' field directly from github-code dataset
+    texts = examples['code']
+    tokenized = tokenizer(texts, truncation=True, padding=False, max_length=512, return_tensors=None)
+    tokenized["labels"] = tokenized["input_ids"].copy()
+    return tokenized
+
+tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=dataset.column_names)
 
 # Same quantization config
 bnb_config = BitsAndBytesConfig(
@@ -37,24 +49,11 @@ base_model = AutoModelForCausalLM.from_pretrained(
     trust_remote_code=True, torch_dtype=torch.float16
 )
 
-# CRITICAL: Load your PREVIOUS LoRA adapters on top
+# Load your PREVIOUS LoRA adapters on top
 model = PeftModel.from_pretrained(base_model, previous_model_path)
 model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
-# OPTIONAL: Add NEW LoRA layers or adjust existing (increase capacity)
-# model = get_peft_model(model, lora_config)  # Only if adding fresh LoRA
-
 model.print_trainable_parameters()
-
-# Same tokenization function
-def tokenize_function(examples):
-    texts = [f"### Instruction: {inst}\n### Input: {inp}\n### Response: {out}" 
-             for inst, inp, out in zip(examples['instruction'], examples['input'], examples['output'])]
-    tokenized = tokenizer(texts, truncation=True, padding=False, max_length=512, return_tensors=None)
-    tokenized["labels"] = tokenized["input_ids"].copy()
-    return tokenized
-
-tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=dataset.column_names)
 
 # Conservative resume training args (LOWER LR for continued training)
 training_args = TrainingArguments(
@@ -86,3 +85,4 @@ trainer = Trainer(
 trainer.train()
 trainer.save_model("./my-python-code-llm-v2_final")
 print("✅ Iteration 3 complete!")
+
